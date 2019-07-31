@@ -18,6 +18,6 @@ setuptools.setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    install_requires=[ 'pandas>=0.21.0', 'numpy'],
+    install_requires=['pandas>=0.21.0', 'numpy'],
     entry_points={'console_scripts': ['ARGE=ARGE.ARGE:entry_point']}
 )
