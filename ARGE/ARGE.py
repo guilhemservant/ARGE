@@ -6,6 +6,7 @@ import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import BRICS
 from rdkit.Chem import PandasTools
+from rdkit.Chem.SaltRemover import SaltRemover
 import tkinter as tk
 from tkinter import filedialog
 from tkinter import messagebox
@@ -134,15 +135,15 @@ def df_unique_frag_gen(df_brics_frag):
 
     # Score: - sd_mean_stdz + count_log_stdz + r0_ha_log_stdz) / 3
     df_unique_frag["sd_mean_stdz"] = df_unique_frag["sd_mean"].apply(
-        lambda x: (x - df_unique_frag.sd_mean.mean()) / df_unique_frag.sd_mean.std())
+        lambda x: (x - df_unique_frag.sd_mean.mean()) / df_unique_frag.sd_mean.std() if df_unique_frag.sd_mean.std() != 0 else 0)
 
     df_unique_frag["r0_ha_log"] = np.log(df_unique_frag['r0_ha'])
     df_unique_frag["r0_ha_log_stdz"] = df_unique_frag["r0_ha_log"].apply(
-        lambda x: (x - df_unique_frag.r0_ha_log.mean()) / df_unique_frag.r0_ha_log.std())
+        lambda x: (x - df_unique_frag.r0_ha_log.mean()) / df_unique_frag.r0_ha_log.std() if df_unique_frag.r0_ha_log.std() != 0 else 0)
 
     df_unique_frag["count_log"] = np.log(df_unique_frag['count'])
     df_unique_frag["count_log_stdz"] = df_unique_frag["count_log"].apply(
-        lambda x: (x - df_unique_frag.count_log.mean()) / df_unique_frag.count_log.std())
+        lambda x: (x - df_unique_frag.count_log.mean()) / df_unique_frag.count_log.std() if df_unique_frag.count_log.std() != 0 else 0)
 
     df_unique_frag["Score"] = (
                                           - df_unique_frag.sd_mean_stdz + df_unique_frag.count_log_stdz + df_unique_frag.r0_ha_log_stdz) / 3
@@ -186,6 +187,7 @@ def df_subs_r0_gen(df_unique_frag, list_smiles_n):
 
         if Chem.MolFromSmiles(smiles).HasSubstructMatch(patt):
 
+            # Molecules which match R0 are splited with ReplaceCore
             dict_r0 = {"mol_smiles": smiles, "r0_smiles": best_r0_clean_smiles}
 
             core = Chem.MolFromSmiles(best_r0_clean_smiles)
@@ -196,13 +198,32 @@ def df_subs_r0_gen(df_unique_frag, list_smiles_n):
             for substituant in list_substituants:
                 # Substituants are written with "[n*]" to indicate their atomic position on R0 except the 0 position which is indicated only with "*"
 
-                if "[" in substituant:
-                    for j in range(1, Chem.MolFromSmiles(best_r0_clean_smiles).GetNumHeavyAtoms() + 1):
-                        position = str(j) + "*"
-                        if position in substituant:
-                            dict_r0[position] = substituant
-                else:
-                    dict_r0["0*"] = substituant
+                substituant_clean = substituant
+
+                # Clean the process to have columns homogeneity and avoid columns overlaps
+                # Ex: position 0 is described as "*" and we want [0*] for homogeneity
+                # Ex: columns overlap when there are two substituents on the same position: we want to separate them as [0*] and [0**] for example
+
+                for x in range(0, len(substituant_clean) - 1):
+                    if substituant_clean[x] == "*" and substituant_clean[x + 1] != "]":
+                        substituant_clean = list(substituant_clean)  # Convert the string to a list
+
+                        substituant_clean[x] = "$"  # Change the character using its index
+
+                        substituant_clean = "".join(substituant_clean)
+                substituant_clean = substituant_clean.replace("$", "[0*]")
+
+                for j in range(0, Chem.MolFromSmiles(best_r0_clean_smiles).GetNumHeavyAtoms() + 1):
+                    position = "[" + str(j) + "*]"
+                    position_clean = str(j) + "*"
+
+                    n = "*"
+                    while position_clean in dict_r0:
+                        position_clean = position_clean + "*"
+
+                    if position in substituant_clean:
+                        substituant_clean = substituant_clean.replace(position, "[" + position_clean + "]")
+                        dict_r0[position_clean] = substituant_clean
 
             list_final_dict.append(dict_r0)
 
@@ -216,7 +237,6 @@ def r0_clean(df_subs_r0, df_unique_frag, num_ite):
     # Organize best R0 substituants positions and name them as R1, R2, Rn... depending on their occurence (count)
 
     # Step 1: create a dataframe with substituants name (position) and substituants occurence
-
     list_columns = ["mol_smiles", "r0_smiles"]
     dict_subs_positions = {"position": [], "occurence": []}
 
@@ -273,6 +293,7 @@ def r0_clean(df_subs_r0, df_unique_frag, num_ite):
     for symbol in df_subs_positions["sym"]:
         r0_smiles = r0_smiles.replace(symbol, df_subs_positions["R"].loc[df_subs_positions["sym"] == symbol].item())
 
+    print(r0_smiles)
     df_subs_r0["r0_smiles"] = df_subs_r0["r0_smiles"].apply(lambda x: r0_smiles)
 
     # Step 4: A way to classify all molecules with same best R0, rank them with best R1 occurence, then best R2 occurence, etc...
@@ -290,17 +311,20 @@ def r0_clean(df_subs_r0, df_unique_frag, num_ite):
     df_subs_r0 = df_subs_r0.sort_values(list_r_count, ascending=list_r_false)
     df_subs_r0 = df_subs_r0.reset_index(drop=True)
 
+    df_subs_positions["[R]"] = df_subs_positions["R"].apply(lambda x: "[" + x + "]")
+    df_subs_positions["[position]"] = df_subs_positions["position"].apply(lambda x: "[" + x + "]")
+
     for x in df_subs_positions["R"]:
-        for y in df_subs_positions["position"]:
+        for y in df_subs_positions["[position]"]:
             df_subs_r0[x] = df_subs_r0[x].apply(
-                lambda z: str(z).replace(y, df_subs_positions["R"].loc[df_subs_positions["position"] == y].item()))
-        df_subs_r0[x] = df_subs_r0[x].apply(lambda m: str(m).replace("*", "[" + x + "]"))
+                lambda z: str(z).replace(y, df_subs_positions["[R]"].loc[df_subs_positions["[position]"] == y].item()))
 
         for n in df_subs_r0:
             if n == x:
                 a = x + "_smiles"
                 df_subs_r0 = df_subs_r0.rename(columns={x: a})
 
+    # Index each rows as IterationNumber_IndexRow
     num_row = 1
     list_index = []
     for x in df_subs_r0["mol_smiles"]:
@@ -335,6 +359,8 @@ def list_smiles_n_ite(df_subs_r0, list_smiles_n):
 
 
 def final_undescribed_mol(list_smiles_n):
+    print("ok")
+
     # Handle molecules in list_smiles_n undescribed in df_brics_frag due to brics bonds number of 0 or 1
 
     dict_residual = {"mol_smiles": [], "r0_smiles": []}
@@ -401,9 +427,13 @@ def ARGE_function(root_filename_open):
     suppl = Chem.SDMolSupplier(root_filename_open)
 
     list_smiles_n = []
+    remover = SaltRemover()
     for mol in suppl:
-        list_smiles_n.append(Chem.MolToSmiles(mol))
-
+        try:
+            res = remover.StripMol(mol)
+            list_smiles_n.append(Chem.MolToSmiles(res))
+        except:
+            print("a line of the SDF has been ignored: "+mol)
     print("STEP 0 succeed: file recognized as sdf, all rows recognized as molecules")
 
     # STEP 1: df_brics_frag_gen(), return df_brics_frag
